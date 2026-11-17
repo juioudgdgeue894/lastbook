@@ -1,20 +1,30 @@
 #!/usr/bin/env python3
-"""Convert the Geofabrik SoCal GeoPackage (OpenStreetMap, ODbL) into a compact, spatially indexed
-map database the app can draw offline.
+"""Convert a Geofabrik "free" GeoPackage (OpenStreetMap, ODbL) into a compact, spatially indexed
+map database the app can draw offline. Any Geofabrik region works (SoCal, Scotland, ...).
 
   python3 tools/build_map.py derived/geo/socal.gpkg derived/geo/map.sqlite
+  python3 tools/build_map.py derived/geo/scotland.gpkg derived/geo/map.sqlite --region Scotland --country GB --as-of 2026-11-16
 
-Input is a copy extracted from library-data/geography/openstreetmap/socal-latest-free.gpkg.zip;
-the original archive is only read. Output tables:
+Input is a copy extracted from a Geofabrik <region>-latest-free.gpkg.zip; the original archive is only read.
+--region names the area in the app, --country (ISO code) lets the app use local words (postcode, 999),
+--as-of is the date the extract was made (Geofabrik's Last-Modified). meta.bounds is measured from the data.
+Output tables:
   feat(id, layer, cls, name, minz, geom)   geom = packed int32 lon/lat * 1e6 (see pack())
   feat_idx (R*Tree on bbox)
   poi(id, cls, name, lon, lat)             help-relevant points (hospitals, pharmacies, water...)
   meta(key, value)
 """
-import math, sqlite3, struct, sys, time
+import argparse, math, os, sqlite3, struct, time
 from array import array
 
-SRC, DST = sys.argv[1], sys.argv[2]
+_ap = argparse.ArgumentParser()
+_ap.add_argument('src')
+_ap.add_argument('dst')
+_ap.add_argument('--region', default='Southern California')
+_ap.add_argument('--country', default='US')
+_ap.add_argument('--as-of', default='2026-10-25T21:21:21Z')
+ARGS = _ap.parse_args()
+SRC, DST = ARGS.src, ARGS.dst
 Q = 1e6
 
 ROAD_Z = {'motorway': 5, 'trunk': 6, 'motorway_link': 10, 'trunk_link': 10, 'primary': 8, 'primary_link': 12,
@@ -139,8 +149,16 @@ def main():
         dst.execute('INSERT INTO feat VALUES (?,?,?,?,?,?)', (fid[0], layer, cls, name, minz, pack(parts)))
         dst.execute('INSERT INTO feat_idx VALUES (?,?,?,?,?,?,?)', (fid[0], *bx, minz, 30))
 
+    # Geofabrik names its layers gis_osm_roads_free, or gis_osm_roads_free_1 in some extracts: match either.
+    tables = [r[0] for r in src.execute("SELECT table_name FROM gpkg_contents")]
+
     def each(table, cols='fclass,name'):
-        for row in src.execute(f'SELECT geom,{cols} FROM {table}'):
+        found = next((t for t in tables if t == table or t.startswith(table + '_')), None)
+        if found is None:
+            print('no layer', table, flush=True)
+            return
+        geom = next(r[1] for r in src.execute(f'PRAGMA table_info("{found}")') if r[1].lower() in ('geom', 'geometry'))
+        for row in src.execute(f'SELECT "{geom}",{cols} FROM "{found}"'):
             if row[0] is None:
                 continue
             try:
@@ -195,10 +213,14 @@ def main():
             pid += 1
             dst.execute('INSERT INTO poi VALUES (?,?,?,?,?)', (pid, cls, name, (minx + maxx) / 2, (miny + maxy) / 2))
     dst.execute('CREATE INDEX poi_cls ON poi(cls, lon, lat)')
+    box = dst.execute('SELECT MIN(lon),MIN(lat),MAX(lon),MAX(lat) FROM poi').fetchone()
+    name = os.path.basename(SRC).replace('.gpkg', '') + '-latest-free.gpkg.zip'
     dst.executemany('INSERT INTO meta VALUES (?,?)', [
-        ('source', 'OpenStreetMap contributors, via Geofabrik socal-latest-free.gpkg.zip (ODbL 1.0)'),
-        ('data_as_of', '2026-10-25T21:21:21Z'),
-        ('bounds', '-121.36,32.50,-114.10,35.89'),
+        ('source', f'OpenStreetMap contributors, via Geofabrik {name} (ODbL 1.0)'),
+        ('data_as_of', ARGS.as_of),
+        ('bounds', ','.join('%.2f' % v for v in box) if box[0] is not None else ''),
+        ('region', ARGS.region),
+        ('country', ARGS.country),
         ('built', time.strftime('%Y-%m-%dT%H:%M:%S')),
     ])
     dst.commit()

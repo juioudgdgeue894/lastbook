@@ -4,11 +4,22 @@ natural=coastline ways from the SoCal .osm.pbf (read only) with pyosmium, joins 
 the open mainland chain out to sea. Islands are stored as land rings drawn on top of the ocean.
 
   derived/buildenv/bin/python tools/build_coast.py library-data/geography/openstreetmap/socal-latest.osm.pbf derived/geo/map.sqlite
+
+A region whose coast ends at a land border (Scotland, at England) has sea on both sides, so closing out to the
+west does not work. --land-border LAT instead draws the sea as one box around the region and closes the
+mainland chain overland, south of LAT, so it becomes a land ring drawn on top like an island:
+
+  python3 tools/build_coast.py scotland-latest.osm.pbf derived/geo/map.sqlite --land-border 54.4
 """
-import sqlite3, sys
+import argparse, sqlite3
 import osmium
 
-PBF, DST = sys.argv[1], sys.argv[2]
+_ap = argparse.ArgumentParser()
+_ap.add_argument('pbf')
+_ap.add_argument('dst')
+_ap.add_argument('--land-border', type=float, help='latitude south of the region, overland, to close the mainland through')
+ARGS = _ap.parse_args()
+PBF, DST = ARGS.pbf, ARGS.dst
 
 
 class Coast(osmium.SimpleHandler):
@@ -83,11 +94,21 @@ db = sqlite3.connect(DST)
 db.execute("DELETE FROM feat_idx WHERE id IN (SELECT id FROM feat WHERE layer IN ('ocean','island'))")
 db.execute("DELETE FROM feat WHERE layer IN ('ocean','island')")
 nid = db.execute('SELECT max(id) FROM feat').fetchone()[0] + 1
-W = -125.0  # well out to sea
 rings = []
-for p in opened:
-    # land is on the left of coastline direction; close each open chain through the sea to the west.
-    rings.append(p + [(W, p[-1][1]), (W, p[0][1]), p[0]])
+if ARGS.land_border is not None:
+    # Sea: one box around everything, drawn first. Land: the mainland chain closed overland to the south, plus islands.
+    xs = [x for p in opened + closed for x, _ in p]; ys = [y for p in opened + closed for _, y in p]
+    w, e, s, n = min(xs) - 2, max(xs) + 2, ARGS.land_border, max(ys) + 2
+    rings.append([(w, s), (e, s), (e, n), (w, n), (w, s)])
+    if opened:
+        main = opened[0]  # the longest open chain is the mainland coast, cut where the region meets its land border
+        closed.append(main + [(main[-1][0], s), (main[0][0], s), main[0]])
+        print('mainland closed overland; other open chains left out:', [len(p) for p in opened[1:]])
+else:
+    W = -125.0  # well out to sea
+    for p in opened:
+        # land is on the left of coastline direction; close each open chain through the sea to the west.
+        rings.append(p + [(W, p[-1][1]), (W, p[0][1]), p[0]])
 for ring in rings:
     xs = [x for x, _ in ring]; ys = [y for _, y in ring]
     db.execute('INSERT INTO feat VALUES (?,?,?,?,?,?)', (nid, 'ocean', 'ocean', None, 0, pack([ring])))

@@ -1153,14 +1153,38 @@ def socal_classes():
     return frozenset(r[0] for r in db.execute('SELECT DISTINCT cls FROM poi')) if db else frozenset()
 
 
+@functools.lru_cache(maxsize=1)
+def detail_box():
+    """(west, south, east, north) the detailed map.sqlite covers, from its meta.bounds (tools/build_map.py).
+    Older builds without it are the original Southern California map."""
+    db = mapdb()
+    if db is None:
+        return None
+    try:
+        w, s, e, n = (float(v) for v in dict(db.execute('SELECT key,value FROM meta').fetchall())['bounds'].split(','))
+        return w, s, e, n
+    except (sqlite3.Error, KeyError, ValueError):
+        return (-121.4, 32.5, -114.1, 35.9)
+
+
+def overlaps_detail(west, south, east, north):
+    b = detail_box()
+    return b is not None and east >= b[0] and west <= b[2] and north >= b[1] and south <= b[3]
+
+
+def in_detail(lon, lat):
+    b = detail_box()
+    return b is not None and b[0] < lon < b[2] and b[1] < lat < b[3]
+
+
 def _poi_sources(west, south, east, north):
-    """(connection, skip-SoCal-duplicates) pairs for service points."""
+    """(connection, skip-detailed-map-duplicates) pairs for service points."""
     out = []
-    if mapdb() is not None and east >= -121.4 and west <= -114.1 and north >= 32.5 and south <= 35.9:
+    if mapdb() is not None and overlaps_detail(west, south, east, north):
         out.append((mapdb(), False))
     nat = national_mapdb()
     if nat is not None:
-        dedupe = east >= -121.4 and west <= -114.1 and north >= 32.5 and south <= 35.9 and mapdb() is not None
+        dedupe = overlaps_detail(west, south, east, north)
         if dedupe and not getattr(_tls, 'socal_fn', False):
             nat.create_function('socal', 3, lambda cls, lo, la: 1 if cls in socal_classes() and in_socal(lo, la) else 0, deterministic=True)
             _tls.socal_fn = True
@@ -1441,7 +1465,7 @@ def places(q, limit=20, near=None):
             continue
         seen.add(k)
         out.append({'name': name, 'kind': kind, 'detail': detail, 'lat': lat, 'lon': lon, 'source': src,
-                    'onMap': bool(pack_info()) or 32.5 < lat < 35.9 and -121.4 < lon < -114.1})
+                    'onMap': bool(pack_info()) or in_detail(lon, lat)})
         if len(out) >= limit:
             break
     water = water_places(q, near=near)
@@ -1624,14 +1648,20 @@ def map_info():
 
 def pack_datasets(have):
     """The panel beside a pack's map says only what this pack's map files hold."""
-    area = 'the area this map details' if have['bounds'] else 'the whole US'
-    out = [{'label': 'Main roads, towns and water for the whole US (OpenStreetMap, USGS)', 'status': 'Shown at every zoom level'}]
+    db = mapdb()
+    meta = dict(db.execute('SELECT key,value FROM meta').fetchall()) if db else {}
+    uk = meta.get('country') == 'GB'
+    area = meta.get('region') if uk else 'the area this map details' if have['bounds'] else 'the whole US'
+    out = []
+    if national_mapdb() is not None or not uk:
+        out.append({'label': 'Main roads, towns and water for the whole US (OpenStreetMap, USGS)', 'status': 'Shown at every zoom level'})
     if have['detail']:
         out.append({'label': f'Streets, places and help points (OpenStreetMap) for {area}', 'status': 'Street detail stops at the edge of this area.' if have['bounds'] else 'Shown when you zoom in'})
     else:
         out.append({'label': 'No street detail or help points', 'status': 'This download has only the base map. Hospitals, water taps and side streets are not in it.'})
     if PLACEDB.exists():
-        out.append({'label': 'Place names (USGS GNIS, Census 2025 ZIP codes and counties)', 'status': 'Used by "Find a town, ZIP or place"'})
+        out.append({'label': 'Place names and postcodes (Ordnance Survey OS Open Names, OpenStreetMap)', 'status': 'Used by "Find a town, postcode or place"'} if uk
+                   else {'label': 'Place names (USGS GNIS, Census 2025 ZIP codes and counties)', 'status': 'Used by "Find a town, ZIP or place"'})
     if TERRAINDB.exists():
         out.append({'label': 'Elevation (USGS 3DEP)', 'status': 'Shaded relief. Contour lines only where this map has fine detail.' if have['detail'] else 'Shaded relief at broad zoom levels'})
     if BLDGDB.exists():
