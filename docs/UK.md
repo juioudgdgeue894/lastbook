@@ -37,3 +37,20 @@ python3 tools/build_places_uk.py "$SRC/opname_csv_gb.zip" --data "$DATA" --count
 - Full address search: there is no free UK address list. Postcode search is the nearest open equivalent.
 - Elevation and contours (OS Terrain 50 would replace USGS 3DEP), building heights, dams and crops.
 - The US base map of main roads (`national.sqlite`) is not used: outside the region only the world outline shows.
+
+## Local AI: Qwen3.6 35B A3B uncensored
+
+`llm_local.py` speaks Qwen3.6's chat format (from Qwen/Qwen3.6-35B-A3B's `chat_template.jinja`, thinking off) and reads its
+`<tool_call><function=...>` calls. The model is llmfan46's Heretic build, `Qwen3.6-35B-A3B-uncensored-heretic-Q4_K_M.gguf`
+(21.2 GB, SHA-256 in `llm_local.py` and `packaging/manifest-uk.json`). `LASTBOOK_MODEL_FAMILY=gemma` switches back to upstream's
+Gemma 4. Measured on an M4 Pro with 48 GB: 22.2 GB in memory, about 14 s to load, first words in about 1 s, about 50 tokens a
+second. The model starts loading when the Chat page opens.
+
+## Library: Medium, trimmed, plus survival videos from All
+
+- `tools/zip_pick.py` takes single files out of `Lastbook-All.zip` with range requests (its table of contents is at the end),
+  so 425 survival videos (Corporals Corner knots, rope, water, fire, shelter, traps, navigation, first aid; the rest of
+  Primitive Technology; water safety; hunting; field medicine) come without the 388 GB download.
+- `tools/merge_pick.py` adds them to `catalog.json` and `search.sqlite`, drops the Honda lawn mower, snow blower and garden
+  tool videos, and swaps the US map files for the Scotland map.
+- Setup's map choice defaults to "No US map (outside the US)".

@@ -887,3 +887,16 @@ body.map-maxed{overflow:hidden}
   html.wcap .mapwrap.max,html.wcap .chat-side.open{top:var(--cap-h)}   /* the title bar stays, as in Windows' own apps */
   html.wcap:fullscreen .capband,html.wcap:has(:fullscreen) .capband{display:none}   /* nothing of the band, its drag area included, over a page in full screen */
 }
+
+/* Right-click menu on Continue watching cards, drawn like a macOS context menu */
+#ctxmenu{position:fixed;inset:auto;margin:0;min-inline-size:230px;padding:5px;border:1px solid var(--line);border-radius:10px;
+  background:color-mix(in oklch,var(--paper) 86%,transparent);-webkit-backdrop-filter:blur(24px) saturate(1.8);backdrop-filter:blur(24px) saturate(1.8);
+  box-shadow:0 10px 32px oklch(0 0 none / .28),0 0 0 .5px oklch(0 0 none / .12);color:var(--ink);font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  opacity:0;transition:opacity .12s ease-out,display .12s allow-discrete,overlay .12s allow-discrete}
+#ctxmenu:popover-open{opacity:1}
+@starting-style{#ctxmenu:popover-open{opacity:0}}
+#ctxmenu button{display:block;inline-size:100%;padding-block:4px;padding-inline:10px;border:0;border-radius:5px;background:none;color:inherit;font:inherit;text-align:start;cursor:default}
+#ctxmenu button:focus-visible{outline:2px solid transparent;background:var(--accent);color:var(--accent-ink)}
+@media (hover:hover) and (pointer:fine){#ctxmenu button:hover{background:var(--accent);color:var(--accent-ink)}}
+#ctxmenu button:active{background:color-mix(in oklch,var(--accent) 85%,black)}
+#ctxmenu hr{border:0;border-block-start:1px solid var(--line);margin-block:4px;margin-inline:9px}

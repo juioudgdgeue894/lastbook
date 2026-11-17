@@ -93,6 +93,34 @@ async function recents() {   // documents and videos from another library leave 
   return r.filter(x => (!/^[dv]:/.test(x.key) || ok.has(x.key.slice(2))) && !seen.has(rowId(x)) && seen.add(rowId(x)));
 }
 function setVprog(id, data) { const p = vprog(); p[id] = { ...(p[id] || {}), ...data, at: Date.now() }; const keys = Object.keys(p).sort((a, b) => p[b].at - p[a].at).slice(0, 60); store.set('vprog', Object.fromEntries(keys.map(k => [k, p[k]]))) }
+// Right-click (or the menu key on) a Continue watching card: take it off the list, or clear the whole list.
+// Taking a video off forgets where it was paused; it comes back if it is watched again.
+const resumableNow = v => v.t > 10 && (!v.d || v.t < v.d - 15);
+function forgetVprog(ids) { const p = vprog(); ids.forEach(id => delete p[id]); store.set('vprog', p) }
+function dropContCards(ids) {
+  $$('.vcard[data-cont]').forEach(c => { if (ids.includes(c.dataset.cont)) c.remove() });
+  $$('.rail-wrap').forEach(w => { if (!$('.rail', w).children.length) { const h = w.previousElementSibling; if (h && h.classList.contains('sec-head')) h.remove(); w.remove() } });
+}
+let ctxMenu = null;
+document.addEventListener('contextmenu', e => {
+  const card = e.target.closest && e.target.closest('.vcard[data-cont]');
+  if (!card) return;
+  e.preventDefault();
+  if (!ctxMenu) { ctxMenu = document.createElement('div'); ctxMenu.id = 'ctxmenu'; ctxMenu.popover = 'auto'; ctxMenu.setAttribute('role', 'menu'); document.body.append(ctxMenu) }
+  const id = card.dataset.cont;
+  ctxMenu.innerHTML = '<button role="menuitem" data-act="one">Remove from Continue watching</button><hr><button role="menuitem" data-act="all">Clear Continue watching</button>';
+  const r = card.getBoundingClientRect(), x = e.clientX || r.left + 12, y = e.clientY || r.top + 12;
+  ctxMenu.style.insetInlineStart = Math.max(4, Math.min(x, innerWidth - 250)) + 'px';
+  ctxMenu.style.insetBlockStart = Math.max(4, Math.min(y, innerHeight - 90)) + 'px';
+  ctxMenu.onclick = ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    const ids = b.dataset.act === 'all' ? Object.entries(vprog()).filter(([, v]) => resumableNow(v)).map(([k]) => k) : [id];
+    forgetVprog(ids); dropContCards(ids); ctxMenu.hidePopover();
+    toast(ids.length > 1 ? 'Continue watching cleared' : 'Removed from Continue watching');
+  };
+  ctxMenu.showPopover();
+  $('button', ctxMenu).focus();
+});
 
 /* --------------------------------------------------------------- data -- */
 async function api(u, opts) {
@@ -164,7 +192,7 @@ function rowItem(item) {
 function vcard(v, opts = {}) {
   const p = vprog()[v.id];
   const pct = p && p.t && (v.duration || p.d) ? Math.min(100, 100 * p.t / (v.duration || p.d)) : 0;
-  return `<a class="vcard" href="#/watch/${encodeURIComponent(v.id)}?${fromQ()}" ${opts.style || ''}>
+  return `<a class="vcard" href="#/watch/${encodeURIComponent(v.id)}?${fromQ()}" ${opts.style || ''}${opts.cont ? ` data-cont="${esc(v.id)}"` : ''}>
     <span class="vthumb">${v.thumb ? `<img loading="lazy" alt="" src="${fileUrl(v.thumb)}" onerror="this.remove()">` : `<span class="ph">${ico('video')}</span>`}
       ${v.transcript ? '<span class="cc" title="Has a transcript">CC</span>' : ''}${v.duration ? `<span class="dur">${clock(v.duration)}</span>` : ''}${pct > 2 ? `<span class="prog" style="width:${pct}%"></span>` : ''}<span class="play">${ico('play')}</span></span>
     <b>${esc(v.title)}</b><span class="vm">${esc(opts.sub || v.publisher || '')}</span></a>`;
@@ -453,7 +481,7 @@ async function home() {
 async function continueItems() {
   const out = [], rec = await recents();
   (await resumable(12)).slice(0, 6)
-    .forEach(([id, v]) => out.push(vcard({ id, title: v.title, thumb: v.thumb, duration: v.d }, { sub: 'Resume at ' + clock(v.t) })));
+    .forEach(([id, v]) => out.push(vcard({ id, title: v.title, thumb: v.thumb, duration: v.d }, { sub: 'Resume at ' + clock(v.t), cont: true })));
   rec.filter(r => !r.key.startsWith('v:')).slice(0, 8).forEach(r => out.push(`<a class="mini" href="${esc(r.href)}"><small>${esc(r.sub || '')}</small><b>${esc(r.title)}</b></a>`));
   return out;
 }
@@ -530,7 +558,7 @@ async function videosHome() {
   const cont = (await resumable(20)).slice(0, 12);
   const GCOL = { health: 'hurt', water: 'water', food: 'food', power: 'power', outdoors: 'shelter', repair: 'repair', making: 'land' };
   $('#vrows').innerHTML =
-    (cont.length ? secHead('Continue watching') + rail(cont.map(([id, v]) => vcard({ id, title: v.title, thumb: v.thumb, duration: v.d }, { sub: 'Resume at ' + clock(v.t) })).join('')) : '') +
+    (cont.length ? secHead('Continue watching') + rail(cont.map(([id, v]) => vcard({ id, title: v.title, thumb: v.thumb, duration: v.d }, { sub: 'Resume at ' + clock(v.t), cont: true })).join('')) : '') +
     rows.map(r => secHead(esc(r.title), r.note ? esc(r.note) : '', `<a href="#/videos/${r.id}">See all ${r.count}</a>`) +
       rail(r.items.map(v => vcard(v, { style: tcStyle(v.guide || GCOL[r.id]) })).join(''))).join('') +
     `<p class="small muted" style="margin-top:24px">Only videos already downloaded are shown. Many have no captions, so the transcript search and the assistant can’t see what’s said in them.</p>`;
@@ -1030,7 +1058,7 @@ async function savedPage() {
   const cont = await resumable();
   main.innerHTML = `<h1>Saved</h1><p class="lead">Kept on this device only.</p>
   ${s.length ? `<div class="collection" style="margin-top:18px"><ul class="list">${s.map(li).join('')}</ul></div>` : `<div class="empty"><span class="e-ico">${ico('save')}</span><b>Nothing saved yet</b><p>Choose Save on any page, video, article or answer to keep it here.</p></div>`}
-  ${cont.length ? secHead('Continue watching') + rail(cont.map(([id, v]) => vcard({ id, title: v.title, thumb: v.thumb, duration: v.d }, { sub: 'Resume at ' + clock(v.t) })).join('')) : ''}
+  ${cont.length ? secHead('Continue watching') + rail(cont.map(([id, v]) => vcard({ id, title: v.title, thumb: v.thumb, duration: v.d }, { sub: 'Resume at ' + clock(v.t), cont: true })).join('')) : ''}
   ${secHead('Recently opened')}${r.length ? `<div class="collection"><ul class="list">${r.map(li).join('')}</ul></div><p><button class="btn plain" id="clr">Clear recent list</button></p>` : '<div class="empty"><p>Pages you open will appear here.</p></div>'}`;
   const c = $('#clr'); if (c) c.onclick = () => { store.set('recent', []); savedPage() };
 }
