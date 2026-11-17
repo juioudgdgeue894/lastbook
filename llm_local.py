@@ -1,4 +1,4 @@
-"""The optional local AI: Gemma 4 26B A4B run on this computer by lastbook-llm, a program of ours that speaks only through pipes.
+"""The optional local AI: Qwen3.6 35B A3B uncensored (or upstream's Gemma 4 26B A4B) run on this computer by lastbook-llm, a program of ours that speaks only through pipes.
 
 Nothing here opens a socket or reaches past this computer. The model is a file the person downloads from the website, outside the
 app. Lastbook finds it inside the selected library or an explicitly configured model folder, checks the published file, asks llama.cpp
@@ -21,11 +21,20 @@ from pathlib import Path
 
 from engine import paths
 
-FILE = 'gemma-4-26B-A4B-it-UD-Q4_K_M.gguf'
-SIZE = 16_947_541_728
-SHA256 = 'f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f'
-NAME = 'Gemma 4 26B A4B (Unsloth 4-bit, UD-Q4_K_M)'
-SOURCE = 'unsloth/gemma-4-26B-A4B-it-GGUF, revision c099eb48e663fd284577b04978a94ffccb261841'
+# Which model family the prompt layer speaks: 'qwen' (this fork's default, Qwen3.6 35B A3B uncensored) or 'gemma' (upstream).
+FAMILY = os.environ.get('LASTBOOK_MODEL_FAMILY', 'qwen')
+if FAMILY == 'gemma':
+    FILE = 'gemma-4-26B-A4B-it-UD-Q4_K_M.gguf'
+    SIZE = 16_947_541_728
+    SHA256 = 'f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f'
+    NAME = 'Gemma 4 26B A4B (Unsloth 4-bit, UD-Q4_K_M)'
+    SOURCE = 'unsloth/gemma-4-26B-A4B-it-GGUF, revision c099eb48e663fd284577b04978a94ffccb261841'
+else:
+    FILE = 'Qwen3.6-35B-A3B-uncensored-heretic-Q4_K_M.gguf'
+    SIZE = 21_233_608_512
+    SHA256 = 'b82f9f2155eb9c07139d48cc3a37880cf9d0edcca345ef6ad829b62941ccbb82'
+    NAME = 'Qwen3.6 35B A3B uncensored (Heretic, 4-bit Q4_K_M)'
+    SOURCE = 'llmfan46/Qwen3.6-35B-A3B-uncensored-heretic-GGUF, revision f70be2db155a4192a59c559ece01572f3cd508ab'
 CTX = 16384               # tokens the model holds: the system prompt, sources, the conversation and the answer
 RESERVE = 2.5 * 2**30     # memory left for the system and the rest of Lastbook beyond what llama.cpp measures for the model
 IDLE_STOP = int(os.environ.get('LASTBOOK_AI_IDLE_S') or 15 * 60)   # seconds without a question before the model is stopped, to give its memory back
@@ -323,6 +332,14 @@ class Local:
                         self.state = 'error'
                         self.message = self.message or 'The local AI could not start. Look again after closing other programs.'
 
+    def warm(self):
+        """Starts loading the model without waiting, so it is ready by the time a question is typed (the Chat page asks for
+        the status when it opens). It stops again after IDLE_STOP unused, as always."""
+        with self.lock:
+            if self.state == 'stopped' and self.path and (self.fit or {}).get('fits'):
+                self._spawn()
+                self.last_used = time.time()
+
     def stop(self, why=''):
         with self.lock:
             proc, self.proc = self.proc, None
@@ -373,7 +390,7 @@ class Local:
             while not events.empty():       # anything left from an answer that was stopped
                 events.get_nowait()
             req = {'op': 'gen', 'id': rid, 'segments': segments, 'max_tokens': max_tokens, 'temp': 0.2, 'top_k': 64, 'top_p': 0.95,
-                   'min_p': 0.05, 'seed': 1234 + rid, 'stop': ['<|tool_response>']}
+                   'min_p': 0.05, 'seed': 1234 + rid, 'stop': [STOP]}
             try:
                 proc.stdin.write((json.dumps(req, ensure_ascii=False) + '\n').encode('utf-8'))
             except OSError:
@@ -504,7 +521,7 @@ def declaration(tool):
     return s + '}'
 
 
-def render(msgs, tools):
+def _gemma_render(msgs, tools):
     """OpenAI-shaped messages to Gemma 4 segments, as the model's chat template lays them out, with thinking off.
     System messages before the model's first reply in this turn go together at the top, as the evaluation gave them:
     instructions, then the sources, then the question."""
@@ -592,7 +609,7 @@ def size_of(segments):
 CALL = re.compile(r'<\|tool_call>call:([A-Za-z_][\w.-]*)\{(.*?)\}<tool_call\|>', re.S)
 
 
-def parse_calls(text):
+def _gemma_parse_calls(text):
     """(text before the first call, [(name, arguments dict)]) from what the model wrote."""
     calls = []
     for m in CALL.finditer(text):
@@ -683,6 +700,104 @@ class _Args:
                 return float(w)
             except ValueError:
                 return w.strip('"')
+
+
+# ------------------------------------------------------------------------------------------------- Qwen3.6 prompt format --
+# As Qwen/Qwen3.6-35B-A3B's chat_template.jinja lays it out, with thinking off (an empty <think></think>): answers start at once.
+QWEN_TOOLS = ("# Tools\n\nYou have access to the following functions:\n\n<tools>{tools}\n</tools>\n\nIf you choose to call a function "
+              "ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n"
+              "<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the "
+              "second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n"
+              "- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within "
+              "<tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your "
+              "function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, "
+              "answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>")
+NO_THINK = '<think>\n\n</think>\n\n'
+
+
+def _qwen_value(v):
+    return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+
+
+def _qwen_render(msgs, tools):
+    """OpenAI-shaped messages to Qwen3.6 segments. System messages before the model's first reply in this turn go together at the
+    top (instructions, then the sources), as the Gemma layout does; a later system note becomes its own system turn."""
+    last_user = max((i for i, m in enumerate(msgs) if m['role'] == 'user'), default=-1)
+    first_reply = next((i for i, m in enumerate(msgs) if i > last_user and m['role'] in ('assistant', 'tool')), len(msgs))
+    top = [m for i, m in enumerate(msgs) if m['role'] == 'system' and i < first_reply]
+    rest = [m for i, m in enumerate(msgs) if not (m['role'] == 'system' and i < first_reply)]
+    last_q = max((i for i, m in enumerate(rest) if m['role'] == 'user'), default=-1)
+    seg = [['<|im_start|>system\n', True]]
+    if tools:
+        seg.append([QWEN_TOOLS.format(tools=''.join('\n' + json.dumps(t, ensure_ascii=False) for t in tools)), True])
+        seg.append(['\n\n', True])
+    seg += [['\n\n'.join(_text(m).strip() for m in top), False], ['<|im_end|>\n', True]]
+    i = 0
+    while i < len(rest):
+        m, role = rest[i], rest[i]['role']
+        if role == 'assistant':
+            seg.append(['<|im_start|>assistant\n' + (NO_THINK if i > last_q else ''), True])
+            content = _qwen_strip(_text(m))
+            if content:
+                seg.append([content, False])
+            for j, c in enumerate(m.get('tool_calls') or []):
+                f = c['function']
+                args = f.get('arguments')
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args or '{}')
+                    except ValueError:
+                        args = {}
+                lead = ('\n\n' if content else '') if j == 0 else '\n'
+                seg.append([lead + '<tool_call>\n<function=' + f['name'] + '>\n', True])
+                for k, v in (args or {}).items():
+                    seg += [['<parameter=' + k + '>\n', True], [_qwen_value(v), False], ['\n</parameter>\n', True]]
+                seg.append(['</function>\n</tool_call>', True])
+            seg.append(['<|im_end|>\n', True])
+            i += 1
+        elif role == 'tool':
+            seg.append(['<|im_start|>user', True])
+            while i < len(rest) and rest[i]['role'] == 'tool':
+                seg += [['\n<tool_response>\n', True], [_text(rest[i]), False], ['\n</tool_response>', True]]
+                i += 1
+            seg.append(['<|im_end|>\n', True])
+        else:
+            seg += [['<|im_start|>' + role + '\n', True], [_text(m).strip(), False], ['<|im_end|>\n', True]]
+            i += 1
+    seg.append(['<|im_start|>assistant\n' + NO_THINK, True])
+    return seg
+
+
+def _qwen_strip(text):
+    return re.sub(r'<think>.*?</think>', '', text or '', flags=re.S).strip()
+
+
+QWEN_CALL = re.compile(r'<tool_call>\s*<function=([^>\n]+)>(.*?)(?:</function>\s*(?:</tool_call>|$)|$)', re.S)
+QWEN_PARAM = re.compile(r'<parameter=([^>\n]+)>\n?(.*?)\n?</parameter>', re.S)
+
+
+def _qwen_parse_calls(text):
+    """(text before the first call, [(name, arguments dict)]) from what the model wrote."""
+    text = _qwen_strip(text)
+    calls = []
+    for m in QWEN_CALL.finditer(text):
+        args = {}
+        for p in QWEN_PARAM.finditer(m.group(2)):
+            raw = p.group(2)
+            try:
+                v = json.loads(raw) if raw.strip()[:1] in '[{' or raw.strip() in ('true', 'false', 'null') or re.fullmatch(r'-?\d+(\.\d+)?', raw.strip()) else raw
+            except ValueError:
+                v = raw
+            args[p.group(1).strip()] = v
+        calls.append((m.group(1).strip(), args))
+    cut = text.find('<tool_call>')
+    return (text if cut < 0 else text[:cut]), calls
+
+
+if FAMILY == 'gemma':
+    render, parse_calls, CALL_START, STOP = _gemma_render, _gemma_parse_calls, '<|tool_call>', '<|tool_response>'
+else:
+    render, parse_calls, CALL_START, STOP = _qwen_render, _qwen_parse_calls, '<tool_call>', '<tool_response>'
 
 
 # ------------------------------------------------------------------------------------------------------------ helpers --

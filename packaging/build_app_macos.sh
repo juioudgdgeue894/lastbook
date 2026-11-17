@@ -26,7 +26,13 @@ mkdir -p "$OUT"
 uv pip install --python "$VENV/bin/python" -r "$HERE/requirements_macos.txt"
 "$VENV/bin/python" -I -B "$HERE/ship_app_files.py" "$OUT/ship"   # web/ and content/ as they ship: see ship_edits.json
 # What setup can install (docs/SETUP-API.md): the packs publish-packs has verified, with Small from the 1.0.0 release, and the model
-"$VENV/bin/python" -I -B "$HERE/release_manifest.py" --small-from "$ROOT/derived/release/1.0.0-20261104-1507" --out "$OUT/ship/setup/manifest-v1.json"
+# LASTBOOK_MANIFEST=<file> bundles that manifest instead (a build without the release folder, e.g. a fork: save
+# https://downloads.lastbook.org/manifest-v1.json and pass it).
+if [ -n "${LASTBOOK_MANIFEST:-}" ]; then
+  mkdir -p "$OUT/ship/setup" && cp "$LASTBOOK_MANIFEST" "$OUT/ship/setup/manifest-v1.json"
+else
+  "$VENV/bin/python" -I -B "$HERE/release_manifest.py" --small-from "$ROOT/derived/release/1.0.0-20261104-1507" --out "$OUT/ship/setup/manifest-v1.json"
+fi
 # Release gate: setup's downloader verifies every download host through engine/setup/roots.pem only (no system trust store)
 "$VENV/bin/python" -I -B "$HERE/check_tls_roots.py" || { echo "TLS roots gate failed: refresh engine/setup/roots.pem (packaging/setup_roots.py)" >&2; exit 1; }
 export LASTBOOK_SHIP="$OUT/ship"

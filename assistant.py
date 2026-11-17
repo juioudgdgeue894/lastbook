@@ -71,6 +71,7 @@ _status = {'at': 0, 'online': False, 'error': None}
 def model_status():
     local = LOCAL.status() if LOCAL else None
     if local_on():
+        LOCAL.warm()   # the Chat page asks for this when it opens: start loading now, not when the question is sent
         return {'model': local['name'], 'online': True, 'error': None, 'local': local, 'vision': False,
                 'index': dict(INDEX.status) if INDEX else {'state': 'off'}}
     if time.time() - _status['at'] > 15:
@@ -447,7 +448,7 @@ def _local_round(msgs, tools, cancelled, wrote, set_state):
 
     def piece(t):   # the person sees the answer as it is written, up to the first tool call, which is markup
         text[0] += t
-        visible = text[0].split('<|tool_call>', 1)[0].lstrip()
+        visible = text[0].split(llm_local.CALL_START, 1)[0].lstrip()
         if len(visible) > sent[0]:
             wrote(visible[sent[0]:])
             sent[0] = len(visible)
